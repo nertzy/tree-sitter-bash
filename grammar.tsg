@@ -1,0 +1,1006 @@
+// Bash grammar for tree-sitter (native DSL)
+// Translated from grammar.js.
+
+let u = import("util.tsg")
+
+let PREC = {
+    UPDATE: 0, ASSIGN: 1, TERNARY: 2,
+    LOGICAL_OR: 3, LOGICAL_AND: 4,
+    BITWISE_OR: 5, BITWISE_XOR: 6, BITWISE_AND: 7,
+    EQUALITY: 8, COMPARE: 9, TEST: 10, UNARY: 11,
+    SHIFT: 12, ADD: 13, MULTIPLY: 14, EXPONENT: 15,
+    NEGATE: 16, PREFIX: 17, POSTFIX: 18,
+}
+
+grammar {
+    language: "bash",
+
+    conflicts: [
+        [_expression, command_name],
+        [command, variable_assignments],
+        [redirected_statement, command],
+        [redirected_statement, command_substitution],
+        [function_definition, command_name],
+        [pipeline],
+    ],
+
+    inline: [
+        _statement, _terminator, _literal, _terminated_statement,
+        _primary_expression, _simple_variable_name, _multiline_variable_name,
+        _special_variable_name, _c_word, _statement_not_subshell, _redirect,
+    ],
+
+    externals: [
+        heredoc_start, simple_heredoc_body, _heredoc_body_beginning,
+        heredoc_content, heredoc_end, file_descriptor, _empty_value,
+        _concat,
+        // variable_name: name followed by an operator like '=' or '+='.
+        variable_name,
+        test_operator, regex, _regex_no_slash, _regex_no_space,
+        _expansion_word, extglob_pattern, _bare_dollar, _brace_start,
+        _immediate_double_hash,
+        _external_expansion_sym_hash,
+        _external_expansion_sym_bang,
+        _external_expansion_sym_equal,
+        "}", "]", "<<", "<<-",
+        regexp(r"\n"),
+        "(", "esac",
+        __error_recovery,
+    ],
+
+    extras: [
+        comment,
+        regexp(r"\s"),
+        regexp(r"\\\r?\n"),
+        regexp(r"\\( |\t|\v|\f)"),
+    ],
+
+    supertypes: [_statement, _expression, _primary_expression],
+
+    word: word,
+}
+
+// ---------------------------------------------------------------------------
+// Top level
+// ---------------------------------------------------------------------------
+
+rule program { optional(_statements) }
+
+rule _statements {
+    prec(1, seq(
+        repeat(seq(_statement, _terminator)),
+        _statement,
+        optional(_terminator),
+    ))
+}
+
+rule _terminated_statement { repeat1(seq(_statement, _terminator)) }
+
+// ---------------------------------------------------------------------------
+// Statements
+// ---------------------------------------------------------------------------
+
+rule _statement { choice(_statement_not_subshell, subshell) }
+
+rule _statement_not_subshell {
+    choice(
+        redirected_statement, variable_assignment, variable_assignments,
+        command, declaration_command, unset_command, test_command,
+        negated_command, for_statement, c_style_for_statement,
+        while_statement, if_statement, case_statement, pipeline, list,
+        compound_statement, function_definition,
+    )
+}
+
+rule _statement_not_pipeline {
+    prec(1, choice(
+        redirected_statement, variable_assignment, variable_assignments,
+        command, declaration_command, unset_command, test_command,
+        negated_command, for_statement, c_style_for_statement,
+        while_statement, if_statement, case_statement, list,
+        compound_statement, function_definition, subshell,
+    ))
+}
+
+rule redirected_statement {
+    prec_dynamic(-1, prec_right(-1, choice(
+        seq(
+            field(body, _statement),
+            field(redirect, choice(
+                repeat1(choice(file_redirect, heredoc_redirect)),
+            )),
+        ),
+        seq(
+            field(body, choice(if_statement, while_statement)),
+            herestring_redirect,
+        ),
+        field(redirect, repeat1(_redirect)),
+        herestring_redirect,
+    )))
+}
+
+rule for_statement {
+    seq(
+        choice("for", "select"),
+        field(variable, _simple_variable_name),
+        optional(seq("in", field(value, repeat1(_literal)))),
+        _terminator,
+        field(body, do_group),
+    )
+}
+
+rule c_style_for_statement {
+    seq(
+        "for",
+        "((",
+        choice(_for_body),
+        "))",
+        optional(";"),
+        field(body, choice(do_group, compound_statement)),
+    )
+}
+
+rule _for_body {
+    seq(
+        field(initializer, u::commaSep(_c_expression)),
+        _c_terminator,
+        field(condition, u::commaSep(_c_expression)),
+        _c_terminator,
+        field(update, u::commaSep(_c_expression)),
+    )
+}
+
+rule _c_expression {
+    choice(_c_expression_not_assignment, alias(_c_variable_assignment, variable_assignment))
+}
+
+rule _c_expression_not_assignment {
+    choice(
+        _c_word, simple_expansion, expansion, number, string,
+        alias(_c_unary_expression, unary_expression),
+        alias(_c_binary_expression, binary_expression),
+        alias(_c_postfix_expression, postfix_expression),
+        alias(_c_parenthesized_expression, parenthesized_expression),
+        command_substitution,
+    )
+}
+
+rule _c_variable_assignment {
+    seq(
+        field(name, alias(_c_word, variable_name)),
+        "=",
+        field(value, _c_expression),
+    )
+}
+
+rule _c_unary_expression {
+    prec(PREC.PREFIX, seq(
+        field(operator, choice("++", "--")),
+        _c_expression_not_assignment,
+    ))
+}
+
+rule _c_binary_expression {
+    choice(
+        for (op: rule_t, p: int_t) in [
+            (choice("+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", "&=", "^=", "|="), PREC.UPDATE),
+            (choice("||", "-o"), PREC.LOGICAL_OR),
+            (choice("&&", "-a"), PREC.LOGICAL_AND),
+            ("|", PREC.BITWISE_OR),
+            ("^", PREC.BITWISE_XOR),
+            ("&", PREC.BITWISE_AND),
+            (choice("==", "!="), PREC.EQUALITY),
+            (choice("<", ">", "<=", ">="), PREC.COMPARE),
+            (choice("<<", ">>"), PREC.SHIFT),
+            (choice("+", "-"), PREC.ADD),
+            (choice("*", "/", "%"), PREC.MULTIPLY),
+        ] {
+            prec_left(p, seq(
+                field(left, _c_expression_not_assignment),
+                field(operator, op),
+                field(right, _c_expression_not_assignment),
+            ))
+        },
+        prec_right(PREC.EXPONENT, seq(
+            field(left, _c_expression_not_assignment),
+            field(operator, "**"),
+            field(right, _c_expression_not_assignment),
+        )),
+    )
+}
+
+rule _c_postfix_expression {
+    prec(PREC.POSTFIX, seq(
+        _c_expression_not_assignment,
+        field(operator, choice("++", "--")),
+    ))
+}
+
+rule _c_parenthesized_expression {
+    seq("(", u::commaSep1(_c_expression), ")")
+}
+
+rule _c_word { alias(regexp(r"[a-zA-Z_][a-zA-Z0-9_]*"), word) }
+
+rule while_statement {
+    seq(
+        choice("while", "until"),
+        field(condition, _terminated_statement),
+        field(body, do_group),
+    )
+}
+
+rule do_group {
+    seq("do", optional(_terminated_statement), "done")
+}
+
+rule if_statement {
+    seq(
+        "if",
+        field(condition, _terminated_statement),
+        "then",
+        optional(_terminated_statement),
+        repeat(elif_clause),
+        optional(else_clause),
+        "fi",
+    )
+}
+
+rule elif_clause {
+    seq("elif", _terminated_statement, "then", optional(_terminated_statement))
+}
+
+rule else_clause {
+    seq("else", optional(_terminated_statement))
+}
+
+rule case_statement {
+    seq(
+        "case",
+        field(value, _literal),
+        optional(_terminator),
+        "in",
+        optional(_terminator),
+        optional(seq(
+            repeat(case_item),
+            alias(last_case_item, case_item),
+        )),
+        "esac",
+    )
+}
+
+rule case_item {
+    seq(
+        choice(
+            seq(
+                optional("("),
+                field(value, choice(_literal, _extglob_blob)),
+                repeat(seq("|", field(value, choice(_literal, _extglob_blob)))),
+                ")",
+            ),
+        ),
+        optional(_statements),
+        prec(1, choice(
+            field(termination, ";;"),
+            field(fallthrough, choice(";&", ";;&")),
+        )),
+    )
+}
+
+rule last_case_item {
+    seq(
+        optional("("),
+        field(value, choice(_literal, _extglob_blob)),
+        repeat(seq("|", field(value, choice(_literal, _extglob_blob)))),
+        ")",
+        optional(_statements),
+        optional(prec(1, ";;")),
+    )
+}
+
+rule function_definition {
+    prec_right(0, seq(
+        choice(
+            seq("function", field(name, word), optional(seq("(", ")"))),
+            seq(field(name, word), "(", ")"),
+        ),
+        field(body, choice(compound_statement, subshell, test_command, if_statement)),
+        field(redirect, optional(_redirect)),
+    ))
+}
+
+rule compound_statement {
+    seq("{", optional(_terminated_statement), token(prec(-1, "}")))
+}
+
+rule subshell { seq("(", _statements, ")") }
+
+rule pipeline {
+    prec_right(0, seq(
+        _statement_not_pipeline,
+        repeat1(seq(choice("|", "|&"), _statement_not_pipeline)),
+    ))
+}
+
+rule list {
+    prec_left(-1, seq(_statement, choice("&&", "||"), _statement))
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+rule negated_command {
+    seq(
+        "!",
+        choice(
+            prec(2, command),
+            prec(1, variable_assignment),
+            test_command,
+            subshell,
+        ),
+    )
+}
+
+rule test_command {
+    seq(choice(
+        seq("[", optional(choice(_expression, redirected_statement)), "]"),
+        seq(
+            "[[",
+            choice(_expression, alias(_test_command_binary_expression, binary_expression)),
+            "]]",
+        ),
+        seq("((", optional(_expression), "))"),
+    ))
+}
+
+rule _test_command_binary_expression {
+    prec(PREC.ASSIGN, seq(
+        field(left, _expression),
+        field(operator, "="),
+        field(right, alias(_regex_no_space, regex)),
+    ))
+}
+
+rule declaration_command {
+    prec_left(0, seq(
+        choice("declare", "typeset", "export", "readonly", "local"),
+        repeat(choice(_literal, _simple_variable_name, variable_assignment)),
+    ))
+}
+
+rule unset_command {
+    prec_left(0, seq(
+        choice("unset", "unsetenv"),
+        repeat(choice(_literal, _simple_variable_name)),
+    ))
+}
+
+rule command {
+    prec_left(0, seq(
+        repeat(choice(
+            variable_assignment,
+            field(redirect, _redirect),
+        )),
+        field(name, command_name),
+        choice(
+            repeat(choice(
+                field(argument, _literal),
+                field(argument, alias(_bare_dollar, "$")),
+                field(argument, seq(
+                    choice("=~", "=="),
+                    choice(_literal, regex),
+                )),
+                field(redirect, herestring_redirect),
+            )),
+            subshell,
+        ),
+    ))
+}
+
+rule command_name { _literal }
+
+rule variable_assignment {
+    seq(
+        field(name, choice(variable_name, subscript)),
+        choice("=", "+="),
+        field(value, choice(
+            _literal, array, _empty_value,
+            alias(_comment_word, word),
+        )),
+    )
+}
+
+rule variable_assignments { seq(variable_assignment, repeat1(variable_assignment)) }
+
+rule subscript {
+    seq(
+        field(name, variable_name),
+        "[",
+        field(index, choice(_literal, binary_expression, unary_expression, parenthesized_expression)),
+        optional(_concat),
+        "]",
+        optional(_concat),
+    )
+}
+
+rule file_redirect {
+    prec_left(0, seq(
+        field(descriptor, optional(file_descriptor)),
+        choice(
+            seq(
+                choice("<", ">", ">>", "&>", "&>>", "<&", ">&", ">|"),
+                field(destination, repeat1(_literal)),
+            ),
+            seq(
+                choice("<&-", ">&-"),
+                optional(field(destination, _literal)),
+            ),
+        ),
+    ))
+}
+
+rule heredoc_redirect {
+    seq(
+        field(descriptor, optional(file_descriptor)),
+        choice("<<", "<<-"),
+        heredoc_start,
+        optional(choice(
+            alias(_heredoc_pipeline, pipeline),
+            seq(
+                field(redirect, repeat1(_redirect)),
+                optional(_heredoc_expression),
+            ),
+            _heredoc_expression,
+            _heredoc_command,
+        )),
+        regexp(r"\n"),
+        choice(_heredoc_body, _simple_heredoc_body),
+    )
+}
+
+rule _heredoc_pipeline { seq(choice("|", "|&"), _statement) }
+
+rule _heredoc_expression {
+    seq(field(operator, choice("||", "&&")), field(right, _statement))
+}
+
+rule _heredoc_command { repeat1(field(argument, _literal)) }
+
+rule _heredoc_body { seq(heredoc_body, heredoc_end) }
+
+rule heredoc_body {
+    seq(
+        _heredoc_body_beginning,
+        repeat(choice(expansion, simple_expansion, command_substitution, heredoc_content)),
+    )
+}
+
+rule _simple_heredoc_body {
+    seq(alias(simple_heredoc_body, heredoc_body), heredoc_end)
+}
+
+rule herestring_redirect {
+    prec_left(0, seq(
+        field(descriptor, optional(file_descriptor)),
+        "<<<",
+        _literal,
+    ))
+}
+
+rule _redirect { choice(file_redirect, herestring_redirect) }
+
+// ---------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------
+
+rule _expression {
+    choice(
+        _literal, unary_expression, ternary_expression,
+        binary_expression, postfix_expression, parenthesized_expression,
+    )
+}
+
+// https://tldp.org/LDP/abs/html/opprecedence.html
+rule binary_expression {
+    choice(
+        for (op: rule_t, p: int_t) in [
+            (choice("+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", "&=", "^=", "|="), PREC.UPDATE),
+            (choice("=", "=~"), PREC.ASSIGN),
+            ("||", PREC.LOGICAL_OR),
+            ("&&", PREC.LOGICAL_AND),
+            ("|", PREC.BITWISE_OR),
+            ("^", PREC.BITWISE_XOR),
+            ("&", PREC.BITWISE_AND),
+            (choice("==", "!="), PREC.EQUALITY),
+            (choice("<", ">", "<=", ">="), PREC.COMPARE),
+            (test_operator, PREC.TEST),
+            (choice("<<", ">>"), PREC.SHIFT),
+            (choice("+", "-"), PREC.ADD),
+            (choice("*", "/", "%"), PREC.MULTIPLY),
+        ] {
+            prec_left(p, seq(
+                field(left, _expression),
+                field(operator, op),
+                field(right, _expression),
+            ))
+        },
+        prec_right(PREC.EXPONENT, seq(
+            field(left, _expression),
+            field(operator, "**"),
+            field(right, _expression),
+        )),
+        prec(PREC.ASSIGN, seq(
+            field(left, _expression),
+            field(operator, "=~"),
+            field(right, alias(_regex_no_space, regex)),
+        )),
+        prec(PREC.EQUALITY, seq(
+            field(left, _expression),
+            field(operator, choice("==", "!=")),
+            field(right, _extglob_blob),
+        )),
+    )
+}
+
+rule ternary_expression {
+    prec_left(PREC.TERNARY, seq(
+        field(condition, _expression),
+        "?",
+        field(consequence, _expression),
+        ":",
+        field(alternative, _expression),
+    ))
+}
+
+rule unary_expression {
+    choice(
+        prec(PREC.PREFIX, seq(
+            field(operator, choice(for (l: str_t) in ["++", "--"] { token(prec(1, l)) })),
+            _expression,
+        )),
+        prec(PREC.UNARY, seq(
+            field(operator, choice(for (l: str_t) in ["-", "+", "~"] { token(prec(1, l)) })),
+            _expression,
+        )),
+        prec_right(PREC.UNARY, seq(field(operator, "!"), _expression)),
+        prec_right(PREC.TEST, seq(field(operator, test_operator), _expression)),
+    )
+}
+
+rule postfix_expression {
+    prec(PREC.POSTFIX, seq(_expression, field(operator, choice("++", "--"))))
+}
+
+rule parenthesized_expression { seq("(", _expression, ")") }
+
+// ---------------------------------------------------------------------------
+// Literals
+// ---------------------------------------------------------------------------
+
+rule _literal {
+    choice(
+        concatenation,
+        _primary_expression,
+        alias(prec(-2, repeat1(_special_character)), word),
+    )
+}
+
+rule _primary_expression {
+    choice(
+        word,
+        alias(test_operator, word),
+        string, raw_string, translated_string, ansi_c_string,
+        number, expansion, simple_expansion,
+        command_substitution, process_substitution,
+        arithmetic_expansion, brace_expression,
+    )
+}
+
+rule arithmetic_expansion {
+    choice(
+        seq(choice("$((", "(("), u::commaSep1(_arithmetic_expression), "))"),
+        seq("$[", _arithmetic_expression, "]"),
+    )
+}
+
+rule brace_expression {
+    seq(
+        alias(_brace_start, "{"),
+        alias(token_immediate(regexp(r"\d+")), number),
+        token_immediate(".."),
+        alias(token_immediate(regexp(r"\d+")), number),
+        token_immediate("}"),
+    )
+}
+
+rule _arithmetic_expression {
+    prec(1, choice(
+        _arithmetic_literal,
+        alias(_arithmetic_unary_expression, unary_expression),
+        alias(_arithmetic_ternary_expression, ternary_expression),
+        alias(_arithmetic_binary_expression, binary_expression),
+        alias(_arithmetic_postfix_expression, postfix_expression),
+        alias(_arithmetic_parenthesized_expression, parenthesized_expression),
+        command_substitution,
+    ))
+}
+
+rule _arithmetic_literal {
+    prec(1, choice(
+        number, subscript, simple_expansion, expansion,
+        _simple_variable_name, variable_name, string,
+    ))
+}
+
+rule _arithmetic_binary_expression {
+    choice(
+        for (op: rule_t, p: int_t) in [
+            (choice("+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", "&=", "^=", "|="), PREC.UPDATE),
+            (choice("=", "=~"), PREC.ASSIGN),
+            ("||", PREC.LOGICAL_OR),
+            ("&&", PREC.LOGICAL_AND),
+            ("|", PREC.BITWISE_OR),
+            ("^", PREC.BITWISE_XOR),
+            ("&", PREC.BITWISE_AND),
+            (choice("==", "!="), PREC.EQUALITY),
+            (choice("<", ">", "<=", ">="), PREC.COMPARE),
+            (choice("<<", ">>"), PREC.SHIFT),
+            (choice("+", "-"), PREC.ADD),
+            (choice("*", "/", "%"), PREC.MULTIPLY),
+            ("**", PREC.EXPONENT),
+        ] {
+            prec_left(p, seq(
+                field(left, _arithmetic_expression),
+                field(operator, op),
+                field(right, _arithmetic_expression),
+            ))
+        },
+    )
+}
+
+rule _arithmetic_ternary_expression {
+    prec_left(PREC.TERNARY, seq(
+        field(condition, _arithmetic_expression),
+        "?",
+        field(consequence, _arithmetic_expression),
+        ":",
+        field(alternative, _arithmetic_expression),
+    ))
+}
+
+rule _arithmetic_unary_expression {
+    choice(
+        prec(PREC.PREFIX, seq(
+            field(operator, choice(for (l: str_t) in ["++", "--"] { token(prec(1, l)) })),
+            _arithmetic_expression,
+        )),
+        prec(PREC.UNARY, seq(
+            field(operator, choice(for (l: str_t) in ["-", "+", "~"] { token(prec(1, l)) })),
+            _arithmetic_expression,
+        )),
+        prec_right(PREC.UNARY, seq(field(operator, "!"), _arithmetic_expression)),
+    )
+}
+
+rule _arithmetic_postfix_expression {
+    prec(PREC.POSTFIX, seq(_arithmetic_expression, field(operator, choice("++", "--"))))
+}
+
+rule _arithmetic_parenthesized_expression {
+    seq("(", _arithmetic_expression, ")")
+}
+
+rule concatenation {
+    prec(-1, seq(
+        choice(_primary_expression, alias(_special_character, word)),
+        repeat1(seq(
+            choice(_concat, alias(regexp(r"`\s*`"), "``")),
+            choice(
+                _primary_expression,
+                alias(_special_character, word),
+                alias(_comment_word, word),
+                alias(_bare_dollar, "$"),
+            ),
+        )),
+        optional(seq(_concat, "$")),
+    ))
+}
+
+rule _special_character { token(prec(-1, choice("{", "}", "[", "]"))) }
+
+rule string {
+    seq(
+        "\"",
+        repeat(seq(
+            choice(
+                seq(optional("$"), string_content),
+                expansion, simple_expansion,
+                command_substitution, arithmetic_expansion,
+            ),
+            optional(_concat),
+        )),
+        optional("$"),
+        "\"",
+    )
+}
+
+rule string_content {
+    token(prec(-1, regexp(r#"([^"`$\\\r\n]|\\(.|\r?\n))+"#)))
+}
+
+rule translated_string { seq("$", string) }
+
+rule array { seq("(", repeat(_literal), ")") }
+
+rule raw_string { regexp(r"'[^']*'") }
+
+rule ansi_c_string { regexp(r"\$'([^']|\\')*'") }
+
+rule number {
+    choice(
+        regexp(r"-?(0x)?[0-9]+(#[0-9A-Za-z@_]+)?"),
+        // base can be an expansion or command substitution
+        seq(regexp(r"-?(0x)?[0-9]+#"), choice(expansion, command_substitution)),
+    )
+}
+
+rule simple_expansion {
+    seq(
+        "$",
+        choice(
+            _simple_variable_name,
+            _multiline_variable_name,
+            _special_variable_name,
+            variable_name,
+            alias("!", special_variable_name),
+            alias("#", special_variable_name),
+        ),
+    )
+}
+
+rule string_expansion { seq("$", string) }
+
+rule expansion { seq("${", optional(_expansion_body), "}") }
+
+rule _expansion_body {
+    choice(
+        // ${!##} ${!#}
+        repeat1(field(operator, choice(
+            alias(_external_expansion_sym_hash, "#"),
+            alias(_external_expansion_sym_bang, "!"),
+            alias(_external_expansion_sym_equal, "="),
+        ))),
+        seq(
+            optional(field(operator, token_immediate("!"))),
+            choice(variable_name, _simple_variable_name, _special_variable_name, subscript),
+            choice(
+                _expansion_expression,
+                _expansion_regex,
+                _expansion_regex_replacement,
+                _expansion_regex_removal,
+                _expansion_max_length,
+                _expansion_operator,
+            ),
+        ),
+        seq(
+            field(operator, token_immediate("!")),
+            choice(_simple_variable_name, variable_name),
+            optional(field(operator, choice(
+                token_immediate("@"),
+                token_immediate("*"),
+            ))),
+        ),
+        seq(
+            optional(field(operator, choice(for (l: str_t) in ["#", "!", "="] { token_immediate(l) }))),
+            choice(
+                subscript, _simple_variable_name, _special_variable_name, command_substitution,
+            ),
+            repeat(field(operator, choice(
+                alias(_external_expansion_sym_hash, "#"),
+                alias(_external_expansion_sym_bang, "!"),
+                alias(_external_expansion_sym_equal, "="),
+            ))),
+        ),
+    )
+}
+
+rule _expansion_expression {
+    prec(1, seq(
+        field(operator, choice(for (l: str_t) in ["=", ":=", "-", ":-", "+", ":+", "?", ":?"] { token_immediate(l) })),
+        optional(seq(
+            choice(
+                alias(_concatenation_in_expansion, concatenation),
+                command_substitution,
+                word, expansion, simple_expansion, array,
+                string, raw_string, ansi_c_string,
+                alias(_expansion_word, word),
+            ),
+        )),
+    ))
+}
+
+rule _expansion_regex {
+    seq(
+        field(operator, choice("#", alias(_immediate_double_hash, "##"), "%", "%%")),
+        repeat(choice(
+            regex,
+            alias(")", regex),
+            string, raw_string,
+            alias(regexp(r"\s+"), regex),
+        )),
+    )
+}
+
+rule _expansion_regex_replacement {
+    seq(
+        field(operator, choice("/", "//", "/#", "/%")),
+        optional(choice(
+            alias(_regex_no_slash, regex),
+            string,
+            command_substitution,
+            seq(string, alias(_regex_no_slash, regex)),
+        )),
+        // can be elided
+        optional(seq(
+            field(operator, "/"),
+            optional(seq(
+                choice(
+                    _primary_expression,
+                    alias(prec(-2, repeat1(_special_character)), word),
+                    seq(command_substitution, alias(_expansion_word, word)),
+                    alias(_expansion_word, word),
+                    alias(_concatenation_in_expansion, concatenation),
+                    array,
+                ),
+                field(operator, optional("/")),
+            )),
+        )),
+    )
+}
+
+rule _expansion_regex_removal {
+    seq(
+        field(operator, choice(",", ",,", "^", "^^")),
+        optional(regex),
+    )
+}
+
+rule _expansion_max_length {
+    seq(
+        field(operator, ":"),
+        optional(choice(
+            _simple_variable_name, number, arithmetic_expansion,
+            expansion, parenthesized_expression, command_substitution,
+            alias(_expansion_max_length_binary_expression, binary_expression),
+            regexp(r"\n"),
+        )),
+        optional(seq(
+            field(operator, ":"),
+            optional(simple_expansion),
+            optional(choice(
+                _simple_variable_name, number, arithmetic_expansion,
+                expansion, parenthesized_expression, command_substitution,
+                alias(_expansion_max_length_binary_expression, binary_expression),
+                regexp(r"\n"),
+            )),
+        )),
+    )
+}
+
+rule _expansion_max_length_expression {
+    choice(
+        _simple_variable_name, number, expansion,
+        alias(_expansion_max_length_binary_expression, binary_expression),
+    )
+}
+
+rule _expansion_max_length_binary_expression {
+    choice(
+        for (op: rule_t, p: int_t) in [
+            (choice("+", "-"), PREC.ADD),
+            (choice("*", "/", "%"), PREC.MULTIPLY),
+        ] {
+            prec_left(p, seq(
+                _expansion_max_length_expression,
+                field(operator, op),
+                _expansion_max_length_expression,
+            ))
+        },
+    )
+}
+
+rule _expansion_operator {
+    seq(
+        field(operator, token_immediate("@")),
+        field(operator, choice(for (l: str_t) in ["U", "u", "L", "Q", "E", "P", "A", "K", "a", "k"] { token_immediate(l) })),
+    )
+}
+
+rule _concatenation_in_expansion {
+    prec(-2, seq(
+        choice(
+            word, variable_name, simple_expansion, expansion,
+            string, raw_string, ansi_c_string,
+            command_substitution, alias(_expansion_word, word),
+            array, process_substitution,
+        ),
+        repeat1(seq(
+            choice(_concat, alias(regexp(r"`\s*`"), "``")),
+            choice(
+                word, variable_name, simple_expansion, expansion,
+                string, raw_string, ansi_c_string,
+                command_substitution, alias(_expansion_word, word),
+                array, process_substitution,
+            ),
+        )),
+    ))
+}
+
+rule command_substitution {
+    choice(
+        seq("$(", _statements, ")"),
+        seq("$(", field(redirect, file_redirect), ")"),
+        prec(1, seq("`", _statements, "`")),
+        seq("$`", _statements, "`"),
+    )
+}
+
+rule process_substitution {
+    seq(choice("<(", ">("), _statements, ")")
+}
+
+rule _extglob_blob {
+    choice(
+        extglob_pattern,
+        seq(
+            extglob_pattern,
+            choice(string, expansion, command_substitution),
+            optional(extglob_pattern),
+        ),
+    )
+}
+
+rule comment { token(prec(-10, regexp(r"#.*"))) }
+
+// noneOf('#', ...SPECIAL_CHARACTERS) - exclude #, quote chars, brackets,
+// special metacharacters, backslash, whitespace.
+rule _comment_word {
+    token(prec(-8, seq(
+        choice(
+            regexp(r#"[^'"<>{}\[\]()`$|&;\\\s]"#),
+            seq(r"\", regexp(r"[^\s]")),
+        ),
+        repeat(choice(
+            regexp(r#"[^'"<>{}\[\]()`$|&;\\\s]"#),
+            seq(r"\", regexp(r"[^\s]")),
+            r"\ ",
+        )),
+    )))
+}
+
+rule _simple_variable_name { alias(regexp(r"\w+"), variable_name) }
+rule _multiline_variable_name {
+    alias(token(prec(-1, regexp(r"(\w|\\\r?\n)+"))), variable_name)
+}
+
+rule _special_variable_name {
+    alias(choice("*", "@", "?", "!", "#", "-", "$", "0", "_"), special_variable_name)
+}
+
+rule word {
+    token(seq(
+        choice(
+            regexp(r#"[^#'"<>{}\[\]()`$|&;\\\s]"#),
+            seq(r"\", regexp(r"[^\s]")),
+        ),
+        repeat(choice(
+            regexp(r#"[^'"<>{}\[\]()`$|&;\\\s]"#),
+            seq(r"\", regexp(r"[^\s]")),
+            r"\ ",
+        )),
+    ))
+}
+
+rule _c_terminator { choice(";", regexp(r"\n"), "&") }
+rule _terminator { choice(";", ";;", regexp(r"\n"), "&") }

@@ -1,0 +1,5 @@
+// Shared helpers for the Bash grammar.
+// Mirrors the functions defined at the bottom of grammar.js.
+
+macro commaSep1(rule: rule_t) rule_t { seq(rule, repeat(seq(",", rule))) }
+macro commaSep(rule: rule_t) rule_t { optional(commaSep1(rule)) }
