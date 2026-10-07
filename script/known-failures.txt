@@ -60,7 +60,6 @@ examples/gentoo/sys-fs/bcachefs-tools/bcachefs-tools-1.31.5.ebuild
 examples/gentoo/www-client/firefox-bin/files/firefox-bin-r1.sh
 examples/gentoo/www-client/firefox/files/firefox-r1.sh
 examples/wild-corpus/cloud/chef-bcpc/legacy_scripts/make_databag.sh
-examples/wild-corpus/cloud/docker/hack/make.sh
 examples/wild-corpus/cloud/kubernetes/build/common.sh
 examples/wild-corpus/cloud/kubernetes/cluster/gce/config-default.sh
 examples/wild-corpus/cloud/kubernetes/cluster/gce/config-test.sh
@@ -151,7 +150,6 @@ examples/wild-corpus/gnu/glibc-2.23/posix/tst-getconf.sh
 examples/wild-corpus/gnu/glibc-2.23/sysdeps/unix/make-syscalls.sh
 examples/wild-corpus/gnu/grep-2.24/gnulib-tests/init.sh
 examples/wild-corpus/gnu/grep-2.24/tests/init.sh
-examples/wild-corpus/google/bazel/src/test/shell/bazel/remote_helpers.sh
 examples/wild-corpus/google/kythe/.jenkins/nightly-release.sh
 examples/wild-corpus/google/kythe/kythe/extractors/openjdk/extract.sh
 examples/wild-corpus/hg-other/eigen/bench/perf_monitoring/gemm/run.sh

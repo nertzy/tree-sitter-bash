@@ -182,12 +182,12 @@ module.exports = grammar({
     redirected_statement: $ => prec.dynamic(-1, prec.right(-1, choice(
       seq(
         field('body', $._statement),
-        field('redirect', choice(
-          repeat1(choice(
-            $.file_redirect,
-            $.heredoc_redirect,
-          )),
-        )),
+        field('redirect', choice($.file_redirect, $.heredoc_redirect)),
+        field('redirect', repeat(choice(
+          $.file_redirect,
+          $.heredoc_redirect,
+          $.herestring_redirect,
+        ))),
       ),
       seq(
         field('body', choice($.if_statement, $.while_statement)),

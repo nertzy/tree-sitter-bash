@@ -870,6 +870,87 @@ cmd <<<string arg
       (word))))
 
 ==========================================
+Herestrings after file redirects
+==========================================
+
+cat > file <<< text
+
+cmd 2>/dev/null <<< "$input"
+
+cmd > out <<< text 2> err
+
+cmd <<< text > out
+
+cat > out <<< text; echo next
+
+cat > out <<< text & wait
+
+---
+
+(program
+  (redirected_statement
+    (command
+      (command_name
+        (word)))
+    (file_redirect
+      (word))
+    (herestring_redirect
+      (word)))
+  (redirected_statement
+    (command
+      (command_name
+        (word)))
+    (file_redirect
+      (file_descriptor)
+      (word))
+    (herestring_redirect
+      (string
+        (simple_expansion
+          (variable_name)))))
+  (redirected_statement
+    (command
+      (command_name
+        (word)))
+    (file_redirect
+      (word))
+    (herestring_redirect
+      (word))
+    (file_redirect
+      (file_descriptor)
+      (word)))
+  (redirected_statement
+    (command
+      (command_name
+        (word))
+      (herestring_redirect
+        (word)))
+    (file_redirect
+      (word)))
+  (redirected_statement
+    (command
+      (command_name
+        (word)))
+    (file_redirect
+      (word))
+    (herestring_redirect
+      (word)))
+  (command
+    (command_name
+      (word))
+    (word))
+  (redirected_statement
+    (command
+      (command_name
+        (word)))
+    (file_redirect
+      (word))
+    (herestring_redirect
+      (word)))
+  (command
+    (command_name
+      (word))))
+
+==========================================
 Subscripts
 ==========================================
 
